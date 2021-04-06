@@ -1,5 +1,7 @@
 from __future__ import print_function
+from miscc.utils import compute_topk
 
+from miscc.utils import setup_logger
 from miscc.utils import mkdir_p
 from miscc.utils import build_super_images
 from miscc.losses import sent_loss, words_loss
@@ -41,13 +43,13 @@ def parse_args():
                         default='cfg/DAMSM/bird.yml', type=str)
     parser.add_argument('--gpu', dest='gpu_id', type=int, default=0)
     parser.add_argument('--data_dir', dest='data_dir', type=str, default='')
-    parser.add_argument('--manualSeed', type=int, help='manual seed')
+    parser.add_argument('--manualSeed', type=int, default=100, help='manual seed')
     args = parser.parse_args()
     return args
 
 
 def train(dataloader, cnn_model, rnn_model, batch_size,
-          labels, optimizer, epoch, ixtoword, image_dir):
+          labels, optimizer, epoch, ixtoword, image_dir,logger):
     cnn_model.train()
     rnn_model.train()
     s_total_loss0 = 0
@@ -100,14 +102,14 @@ def train(dataloader, cnn_model, rnn_model, batch_size,
         if step % UPDATE_INTERVAL == 0:
             count = epoch * len(dataloader) + step
 
-            s_cur_loss0 = s_total_loss0[0] / UPDATE_INTERVAL
-            s_cur_loss1 = s_total_loss1[0] / UPDATE_INTERVAL
+            s_cur_loss0 = s_total_loss0 / UPDATE_INTERVAL
+            s_cur_loss1 = s_total_loss1 / UPDATE_INTERVAL
 
-            w_cur_loss0 = w_total_loss0[0] / UPDATE_INTERVAL
-            w_cur_loss1 = w_total_loss1[0] / UPDATE_INTERVAL
+            w_cur_loss0 = w_total_loss0 / UPDATE_INTERVAL
+            w_cur_loss1 = w_total_loss1 / UPDATE_INTERVAL
 
             elapsed = time.time() - start_time
-            print('| epoch {:3d} | {:5d}/{:5d} batches | ms/batch {:5.2f} | '
+            logger.info('| epoch {:3d} | {:5d}/{:5d} batches | ms/batch {:5.2f} | '
                   's_loss {:5.2f} {:5.2f} | '
                   'w_loss {:5.2f} {:5.2f}'
                   .format(epoch, step, len(dataloader),
@@ -120,13 +122,13 @@ def train(dataloader, cnn_model, rnn_model, batch_size,
             w_total_loss1 = 0
             start_time = time.time()
             # attention Maps
-            img_set, _ = \
-                build_super_images(imgs[-1].cpu(), captions,
-                                   ixtoword, attn_maps, att_sze)
-            if img_set is not None:
-                im = Image.fromarray(img_set)
-                fullpath = '%s/attention_maps%d.png' % (image_dir, step)
-                im.save(fullpath)
+            #img_set, _ = \
+            #    build_super_images(imgs[-1].cpu(), captions,
+            #                       ixtoword, attn_maps, att_sze)
+            #if img_set is not None:
+            #    im = Image.fromarray(img_set)
+            #    fullpath = '%s/attention_maps%d.png' % (image_dir, step)
+            #    im.save(fullpath)
     return count
 
 
@@ -135,9 +137,15 @@ def evaluate(dataloader, cnn_model, rnn_model, batch_size):
     rnn_model.eval()
     s_total_loss = 0
     w_total_loss = 0
+    
+    count = 0
+    img_lst = []
+    sent_lst = []
     for step, data in enumerate(dataloader, 0):
         real_imgs, captions, cap_lens, \
                 class_ids, keys = prepare_data(data)
+
+        count += batch_size
 
         words_features, sent_code = cnn_model(real_imgs[-1])
         # nef = words_features.size(1)
@@ -145,6 +153,9 @@ def evaluate(dataloader, cnn_model, rnn_model, batch_size):
 
         hidden = rnn_model.init_hidden(batch_size)
         words_emb, sent_emb = rnn_model(captions, cap_lens, hidden)
+
+        img_lst.append(sent_code)
+        sent_lst.append(sent_emb)
 
         w_loss0, w_loss1, attn = words_loss(words_features, words_emb, labels,
                                             cap_lens, class_ids, batch_size)
@@ -154,11 +165,18 @@ def evaluate(dataloader, cnn_model, rnn_model, batch_size):
             sent_loss(sent_code, sent_emb, labels, class_ids, batch_size)
         s_total_loss += (s_loss0 + s_loss1).data
 
-        if step == 50:
+        if count >= 1000:
             break
 
-    s_cur_loss = s_total_loss[0] / step
-    w_cur_loss = w_total_loss[0] / step
+    s_cur_loss = s_total_loss / step
+    w_cur_loss = w_total_loss / step
+
+    img_embs = torch.cat(img_lst)
+    sent_embs = torch.cat(sent_lst)
+
+    acc,pred = compute_topk(img_embs,sent_embs) 
+
+    logger.info('| end epoch {:3d} | top-5 ({:4d}) {:5.2f} valid loss {:5.2f} {:5.2f} | lr {:.5f}|'.format(epoch,count,acc, s_cur_loss, w_cur_loss, lr))
 
     return s_cur_loss, w_cur_loss
 
@@ -207,10 +225,11 @@ if __name__ == "__main__":
     print('Using config:')
     pprint.pprint(cfg)
 
-    if not cfg.TRAIN.FLAG:
-        args.manualSeed = 100
-    elif args.manualSeed is None:
-        args.manualSeed = random.randint(1, 10000)
+    #if not cfg.TRAIN.FLAG:
+    #    args.manualSeed = 100
+    #elif args.manualSeed is None:
+    #    args.manualSeed = random.randint(1, 10000)
+    
     random.seed(args.manualSeed)
     np.random.seed(args.manualSeed)
     torch.manual_seed(args.manualSeed)
@@ -218,15 +237,16 @@ if __name__ == "__main__":
         torch.cuda.manual_seed_all(args.manualSeed)
 
     ##########################################################################
-    now = datetime.datetime.now(dateutil.tz.tzlocal())
-    timestamp = now.strftime('%Y_%m_%d_%H_%M_%S')
-    output_dir = '../output/%s_%s_%s' % \
-        (cfg.DATASET_NAME, cfg.CONFIG_NAME, timestamp)
+    output_dir = '../output/%s' % (cfg.CONFIG_NAME)
 
     model_dir = os.path.join(output_dir, 'Model')
     image_dir = os.path.join(output_dir, 'Image')
+    log_dir = os.path.join(output_dir,'Log')
     mkdir_p(model_dir)
     mkdir_p(image_dir)
+    mkdir_p(log_dir)
+
+    logger = setup_logger(name=cfg.CONFIG_NAME,save_dir=log_dir)
 
     torch.cuda.set_device(cfg.GPU_ID)
     cudnn.benchmark = True
@@ -234,10 +254,16 @@ if __name__ == "__main__":
     # Get data loader ##################################################
     imsize = cfg.TREE.BASE_SIZE * (2 ** (cfg.TREE.BRANCH_NUM-1))
     batch_size = cfg.TRAIN.BATCH_SIZE
-    image_transform = transforms.Compose([
-        transforms.Scale(int(imsize * 76 / 64)),
-        transforms.RandomCrop(imsize),
-        transforms.RandomHorizontalFlip()])
+    if cfg.TRAIN.TRANS == 'org':
+        image_transform = transforms.Compose([
+            transforms.Scale(int(imsize * 76 / 64)),
+            transforms.RandomCrop(imsize),
+            transforms.RandomHorizontalFlip()])
+    else:
+        image_transform = transforms.Compose([
+            transforms.Scale(int(imsize * 76 / 64)),
+            transforms.RandomCrop(imsize)])
+
     dataset = TextDataset(cfg.DATA_DIR, 'train',
                           base_size=cfg.TREE.BASE_SIZE,
                           transform=image_transform)
@@ -250,11 +276,11 @@ if __name__ == "__main__":
 
     # # validation data #
     dataset_val = TextDataset(cfg.DATA_DIR, 'test',
-                              base_size=cfg.TREE.BASE_SIZE,
-                              transform=image_transform)
+                              base_size = cfg.TREE.BASE_SIZE,
+                              transform = transforms.Compose([transforms.Resize((imsize,imsize))]))
     dataloader_val = torch.utils.data.DataLoader(
         dataset_val, batch_size=batch_size, drop_last=True,
-        shuffle=True, num_workers=int(cfg.WORKERS))
+        shuffle=False, num_workers=int(cfg.WORKERS))
 
     # Train ##############################################################
     text_encoder, image_encoder, labels, start_epoch = build_models()
@@ -271,15 +297,15 @@ if __name__ == "__main__":
             epoch_start_time = time.time()
             count = train(dataloader, image_encoder, text_encoder,
                           batch_size, labels, optimizer, epoch,
-                          dataset.ixtoword, image_dir)
-            print('-' * 89)
+                          dataset.ixtoword, image_dir, logger)
+            logger.info('-' * 89)
             if len(dataloader_val) > 0:
                 s_loss, w_loss = evaluate(dataloader_val, image_encoder,
                                           text_encoder, batch_size)
-                print('| end epoch {:3d} | valid loss '
-                      '{:5.2f} {:5.2f} | lr {:.5f}|'
-                      .format(epoch, s_loss, w_loss, lr))
-            print('-' * 89)
+                #logger.info('| end epoch {:3d} | valid loss '
+                #      '{:5.2f} {:5.2f} | lr {:.5f}|'
+                #      .format(epoch, s_loss, w_loss, lr))
+            logger.info('-' * 89)
             if lr > cfg.TRAIN.ENCODER_LR/10.:
                 lr *= 0.98
 

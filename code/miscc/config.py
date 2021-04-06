@@ -27,6 +27,7 @@ __C.TREE.BASE_SIZE = 64
 
 # Training options
 __C.TRAIN = edict()
+__C.TRAIN.TRANS = 'org'
 __C.TRAIN.BATCH_SIZE = 64
 __C.TRAIN.MAX_EPOCH = 600
 __C.TRAIN.SNAPSHOT_INTERVAL = 2000
@@ -70,9 +71,9 @@ def _merge_a_into_b(a, b):
     if type(a) is not edict:
         return
 
-    for k, v in a.iteritems():
+    for k, v in a.items():
         # a must specify keys that are in b
-        if not b.has_key(k):
+        if k not in b:
             raise KeyError('{} is not a valid config key'.format(k))
 
         # the types must match, too

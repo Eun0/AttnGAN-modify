@@ -1,4 +1,4 @@
-CONFIG_NAME: 'DAMSM'
+CONFIG_NAME: 'DAMSM_no_flip'
 
 DATASET_NAME: 'coco'
 DATA_DIR: '../data/coco'
@@ -12,11 +12,12 @@ TREE:
 
 
 TRAIN:
-    TRANS: 'org'
+    TRANS: 'no_flip'
     FLAG: True
     NET_E: ''  # '../DAMSMencoders/coco/text_encoder100.pth'
     BATCH_SIZE: 50
     MAX_EPOCH: 600
+
     SNAPSHOT_INTERVAL: 1
     ENCODER_LR: 0.002  # 0.0002best; 0.002good
     RNN_GRAD_CLIP: 0.25

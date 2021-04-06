@@ -1,4 +1,6 @@
 import os
+import sys
+import logging
 import errno
 import numpy as np
 from torch.nn import init
@@ -25,6 +27,46 @@ COLOR_DIC = {0:[128,64,128],  1:[244, 35,232],
              16:[0, 80, 100], 17:[0, 0, 230],
              18:[0,  0, 70],  19:[0, 0,  0]}
 FONT_MAX = 50
+
+
+@torch.no_grad()
+def compute_topk(img_embs,sent_embs,k=5):
+
+    img_norm = torch.norm(img_embs,2,dim=1,keepdim=True)
+    img_norm = img_embs/img_norm.clamp(min=1e-8)
+
+    sent_norm = torch.norm(sent_embs,2,dim=1,keepdim=True)
+    sent_norm = sent_embs/sent_norm.clamp(min=1e-8)
+
+    output = torch.matmul(sent_norm,img_norm.permute(1,0))
+
+    _,preds = output.topk(k=k)
+    target = torch.LongTensor(range(len(sent_norm))).cuda()
+    target = target.view(-1,1).expand_as(preds)
+    corr = preds.eq(target)
+    acc = torch.sum(corr)/preds.size(0)
+    return acc,preds
+
+
+def setup_logger(name,save_dir,distributed_rank=0,filename='log.txt'):
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.DEBUG)
+    if distributed_rank > 0:
+        return logger
+    
+    ch = logging.StreamHandler(stream=sys.stdout)
+    ch.setLevel(logging.DEBUG)
+    formatter = logging.Formatter("%(asctime)s %(name)s %(levelname)s: %(message)s")
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
+
+    if save_dir:
+        fh = logging.FileHandler(os.path.join(save_dir,filename))
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(formatter)
+        logger.addHandler(fh)
+
+    return logger
 
 
 def drawCaption(convas, captions, ixtoword, vis_size, off1=2, off2=2):
